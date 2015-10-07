@@ -20,7 +20,6 @@ class analysis(object):
         for num in range(14):
             self.covar_names[num + 3] = covars[num]
 
-
     def input_chain(self,prompt,expected_type):
         query = raw_input(prompt)
         try:
@@ -75,11 +74,3 @@ class analysis(object):
             np.unique(variables)]
         self.test_data = self.raw_data[:,np.unique(variables)][self.cohort_mask]
 
-
-
-
-datacore = analysis("Beleg_Biostatistik_2015_Daten.txt",7)
-datacore.pick_cohorts()
-datacore.pick_vars()
-for _ in [datacore.test_censored,datacore.test_times,datacore.test_variables, datacore.test_data]:
-    print(_)
