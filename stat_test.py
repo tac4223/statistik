@@ -4,10 +4,10 @@ Created on Tue Oct 06 21:21:12 2015
 
 @author: xerol
 """
-import statistics
+import statistics as st
 
-datacore = analysis("Beleg_Biostatistik_2015_Daten.txt",7)
+datacore = st.analysis("Beleg_Biostatistik_2015_Daten.txt",7)
 datacore.pick_cohorts()
 datacore.pick_vars()
-for _ in [datacore.test_censored,datacore.test_times,datacore.test_variables, datacore.test_data]:
-    print(_)
+
+cox = st.cox_engine(datacore.test_data, datacore.test_times, datacore.test_censored)
