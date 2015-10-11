@@ -5,6 +5,7 @@ Created on Mon Oct 05 17:31:13 2015
 @author: xerol
 """
 import numpy as np
+import scipy.stats as sp
 
 class analysis(object):
 
@@ -19,6 +20,16 @@ class analysis(object):
         self.covar_names = {}
         for num in range(14):
             self.covar_names[num + 3] = covars[num]
+
+    def fit_loop(self):
+        go_on = 1
+        while go_on:
+            self.pick_cohorts()
+            self.pick_vars()
+            self.fit_cox()
+            self.fit_statistics()
+            self.print_statistic()
+            go_on = self.input_chain("Neue Analyse starten? (j/n): ",str) == "j"
 
     def input_chain(self,prompt,expected_type):
         query = raw_input(prompt)
@@ -73,9 +84,37 @@ class analysis(object):
             np.unique(variables)]
         self.test_data = self.raw_data[:,np.unique(variables)][self.cohort_mask]
 
+    def fit_cox(self):
+        self.fit = cox_engine(self.test_data, self.test_times, self.test_censored)
+        self.fit.iterate()
 
+
+
+    def fit_statistics(self):
+        self.significance = self.input_chain("Bitte gewünschtes Signifikanzniveau in Prozent eingeben: ", float)/100.
+        self.stabw = np.sqrt(np.diagonal(-1*self.fit.i_inv))
+        self.wald = (self.fit.b/self.stabw)**2
+        self.p_val = 1 - sp.chi2.cdf(self.wald,1)
+        self.hazard_ratio = np.exp(self.fit.b)
+        self.hazard_confidence = self.hazard_ratio - np.exp(sp.norm.ppf(1 - self.significance/2) *
+            self.stabw)
+        self.hazard_confidence = np.array([(self.hazard_ratio - self.hazard_confidence).flatten(),
+                             (self.hazard_ratio + self.hazard_confidence).flatten()])
+
+    def print_statistic(self):
+        print("Gefittete Parameter:\n\n")
+        for param in range(self.fit.num_vars):
+            print("\n{0}\n-----\nb: {1}\nSt.abw.: {2}\nHazard-Ratio: {3}\n"\
+            "Hazard-KI: {4}\nWald-Statistik: {5}\np-Wert: {6}".format(
+            self.test_variables[param],self.fit.b[0,param],self.stabw[param],
+            self.hazard_ratio[0,param],self.hazard_confidence[:,param],
+            self.wald[0,param],self.p_val[0,param]))
 
 class cox_engine(object):
+    """
+    Named after Zefram Coxrane, who built humanity's first regression-capable
+    vessel out of an old Titan II nuclear p-value.
+    """
 
     def __init__(self, data, time, censoring):
 
@@ -109,13 +148,13 @@ class cox_engine(object):
 
         self.a = np.ones((self.num_vars,self.num_times,self.num_vars))
         for _ in range(self.num_times):
-            self.a[::1,_,:] = misordered_sum[::1,_,:]
+            self.a[:,_,:] = misordered_sum[:,_,:]
 
     def get_i(self):
         inner_sum = self.data * np.transpose(self.data * np.ones((self.num_vars,self.num_times,self.num_vars)) / self.g)
         hg = np.ones((self.num_vars,self.num_times,self.num_vars))
         for _ in range(self.num_times):
-            hg[::1,_,:] = inner_sum[::1,_,:]
+            hg[:,_,:] = inner_sum[:,_,:]
         inner_sum = self.a - hg
         inner_sum *= (np.ones((self.num_times,self.num_vars)) * self.censoring/self.g)
         self.i_inv = np.linalg.inv(-1*np.sum(inner_sum,1))
@@ -139,7 +178,6 @@ class cox_engine(object):
         current_step = last_step + 1
         while np.abs(last_step - current_step) > 1e-8:
             last_step = 1.*current_step
-            print("Iterating!")
             self.get_all()
             current_step = self.calc_LL()
 
