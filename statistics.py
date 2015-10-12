@@ -58,13 +58,15 @@ class analysis(object):
         Nicht-numerischen Zeilen vor den eigentlichen Daten.
         """
         self.raw_data = np.loadtxt(filename,skiprows = headersize)
-        covars = "Alter	Geschlecht	T N GTVVol FDGVol	TBR_0	V16_0	\
-        TBR_1	V16_1	TBR_2	V16_2	TBR_5	V16_5".split()
+        covars = "Alter	Geschlecht	T	N	GTVVol	FDGVol	TBR_0\
+        V16_0	TBR_1	V16_1	TBR_2	V16_2	TBR_5	V16_5\
+        cutoff_tbr2".split()
+        self.num_of_covars = len(covars)
 
         self.subject_count = len(self.raw_data[:,0])
 
         self.covar_names = {}
-        for num in range(14):
+        for num in range(len(covars)):
             self.covar_names[num + 3] = covars[num]
 
 
@@ -80,7 +82,31 @@ class analysis(object):
             self.fit_cox()
             self.fit_statistics()
             self.print_statistic()
+            self.stat_to_file()
             go_on = self.input_chain("Neue Analyse starten? (j/n): ",str) == "j"
+
+    def mass_analysis(self, number):
+        """
+        number: Index der gewünschten klinischen Variable zur Erstellung aller
+            Hypoxie-Modelle, entsprechend self.pick_vars()
+
+        Reine Backend-Funktion um die massenhafte Erstellung von Modellen mit
+        je einer Hypoxievariable zu vereinfachen. Fire & Forget, die Variable
+        die per number übergeben wird, wird einmal komplett durchgehauen.
+        """
+        self.cohort_mask = np.ones(self.subject_count,dtype=bool)
+        self.test_times = np.reshape(self.raw_data[:,1][self.cohort_mask],
+             (-1,1))
+        self.test_censored = np.reshape(self.raw_data[:,2][self.cohort_mask],
+            (-1,1))
+        for _ in range(6,self.num_of_covars-2):
+            variables = [number+3, _+3]
+            self.test_variables = [self.covar_names[num] for num in variables]
+            self.test_data = self.raw_data[:,np.unique(variables)]\
+                [self.cohort_mask]
+            self.fit_cox()
+            self.fit_statistics(0.05)
+            self.stat_to_file()
 
 
     def input_chain(self,prompt,expected_type):
@@ -127,14 +153,16 @@ class analysis(object):
         variables = []
         while go_on:
             print("Bitte gewünschte Variable auswählen:\n")
-            for num in range(14):
+            for num in range(self.num_of_covars):
                 print("{0}: {1}".format(self.covar_names[num+3],num))
 
-            usr_input = self.input_chain("Bitte Zahl (0-13) eingeben: ", int)
-            if usr_input <= 13:
+            usr_input = self.input_chain("Bitte Zahl (0-{0}) eingeben: ".
+                format(self.num_of_covars-1), int)
+            if usr_input <= self.num_of_covars-1:
                 variables.append(usr_input + 3)
             else:
-                print("Nur Zahlen bis 13 eingeben!")
+                print("Nur Zahlen bis {0} eingeben!".format(
+                    self.num_of_covars-1))
 
             keep_going = self.input_chain("Weitere Variable auswählen? (j/n)",
                                           str)
@@ -161,13 +189,16 @@ class analysis(object):
         self.fit.iterate()
 
 
-    def fit_statistics(self):
+    def fit_statistics(self, significance=None):
         """
         Berechnet alle in der Aufgabenstellung geforderten Werte für die
-        gefundenen Fitparameter.
+        gefundenen Fitparameter. Sollte eigentlich nichts unverständliches
+        dabei sein.
         """
-        self.significance = self.input_chain("Bitte gewünschtes "\
-            "Signifikanzniveau in Prozent eingeben: ", float)/100.
+        if significance == None:
+            self.significance = self.input_chain("Bitte gewünschtes "\
+                "Signifikanzniveau in Prozent eingeben: ", float)/100.
+        else: self.significance = significance
         self.stabw = np.sqrt(np.diagonal(-1*self.fit.i_inv))
         self.wald = (self.fit.b/self.stabw)**2
         self.p_val = 1 - sp.chi2.cdf(self.wald,1)
@@ -192,18 +223,26 @@ class analysis(object):
             self.wald[0,param],self.p_val[0,param]))
             if self.p_val[0,param] < 0.05:
                 print("Signifikanter Einfluss!")
+            else:
+                print("Kein signifikanter Einfluss!")
 
 
-    def stat_to_file(self):
+    def stat_to_file(self, filename="results.txt"):
         """
-        Schreibt die Daten stattdessen in logfile.
+        filename: string, Name der Datei die angelegt werden soll. Falls schon
+            vorhanden, werden neue Ausgaben angehängt.
+
+        Schreibt die Daten in Logfile statt sie auf Konsole auszugeben.
         """
-        with open("results.txt","a") as logfile:
+        with open(filename,"a") as logfile:
+            logfile.write("\n\n################\n{}\n################\n".\
+                format(self.test_variables))
             for param in range(self.fit.num_vars):
-                logfile.write("\n{0}\n-----\nb: {1}\nSt.abw.: {2}\n"\
+                logfile.write("\n-----\n{0}\n-----\nb: {1}\nSt.abw.: {2}\n"\
                 "Hazard-Ratio: {3}\n"\
                 "Hazard-KI: {4}\nWald-Statistik: {5}\np-Wert: {6}".format(
-                self.test_variables[param],self.fit.b[0,param],self.stabw[param],
+                self.test_variables[param],self.fit.b[0,param],
+                self.stabw[param],
                 self.hazard_ratio[0,param],self.hazard_confidence[:,param],
                 self.wald[0,param],self.p_val[0,param]))
 
@@ -325,6 +364,12 @@ class cox_engine(object):
         Falls A korrekt ist, sollte hier nicht viel schief gehen. Aber wieder
         hatte ich mehrere große Knoten im Hirn beim Versuch, das vernünftig
         hinzukriegen.
+
+        inner_sum ist der Broadcast von h_ij*h_ik auf den entsprechenden
+            Matrixwürfel, dabei kommen allerdings die Elemente in der falschen
+            Reihenfolge zutage (alle ersten Zeilen, alle zweiten Zeilen...)
+        hg der identische Würfel wie inner_sum, aber korrekt sortiert. Geht
+            sicher schöner.
         """
         inner_sum = self.data * np.transpose(self.data * np.ones(
             (self.num_vars,self.num_times,self.num_vars)) / self.g)
@@ -348,6 +393,7 @@ class cox_engine(object):
     def get_all(self):
         """
         Ruft alles auf was man zum Fitten so braucht.
+        Berechnet alle Parameter, aktualisiert zu guter letzt die b_j
         """
         self.get_exponential_sum()
         self.get_g()
@@ -364,6 +410,9 @@ class cox_engine(object):
         """
         Threshold: Mindeständerung in der LL pro Iterationsschritt um den Fit
         noch nicht abzubrechen.
+
+        last_step: Wert der LL Funktion aus dem letzten Schritt.
+        current_step: Entsprechender derzeitiger Wert.
         """
         self.get_all()
         last_step = self.calc_LL()
@@ -373,3 +422,5 @@ class cox_engine(object):
             self.get_all()
             current_step = self.calc_LL()
 
+datacron = analysis("Beleg_Biostatistik_2015_Daten_tbrcutoff.txt",8)
+datacron.fit_loop()
